@@ -135,6 +135,86 @@ final class PDFToolTests: XCTestCase {
         XCTAssertEqual(annotations.first?.contents, "Approved")
     }
 
+    func testHighlightAndUnderlineAnnotationsPersistToPDF() throws {
+        let directory = try makeTemporaryDirectory()
+        let source = directory.appendingPathComponent("marked-up.pdf")
+        try makePDF(at: source, pageCount: 1)
+
+        try PDFTool.addHighlightAnnotation(
+            to: source,
+            pageIndex: 0,
+            bounds: CGRect(x: 10, y: 10, width: 60, height: 20),
+            color: .yellow
+        )
+        try PDFTool.addUnderlineAnnotation(
+            to: source,
+            pageIndex: 0,
+            bounds: CGRect(x: 10, y: 42, width: 80, height: 18),
+            color: .blue
+        )
+
+        let document = try PDFTool.openDocument(at: source)
+        let annotations = try XCTUnwrap(document.page(at: 0)?.annotations)
+        XCTAssertEqual(annotations.compactMap(\.type).sorted(), ["Highlight", "Underline"])
+    }
+
+    func testRotateDeleteAndReorderPagesPersistToPDF() throws {
+        let directory = try makeTemporaryDirectory()
+        let source = directory.appendingPathComponent("pages.pdf")
+        try makePDF(at: source, pageCount: 3)
+        try addMarkerAnnotations(to: source, count: 3)
+
+        try PDFTool.rotatePages(at: IndexSet(integer: 1), by: 1, in: source)
+        var document = try PDFTool.openDocument(at: source)
+        XCTAssertEqual(document.page(at: 1)?.rotation, 90)
+
+        try PDFTool.reorderPages(to: [2, 0, 1], in: source)
+        document = try PDFTool.openDocument(at: source)
+        XCTAssertEqual(document.page(at: 0)?.annotations.first?.contents, "marker-2")
+
+        try PDFTool.deletePages(at: IndexSet(integer: 1), from: source)
+        document = try PDFTool.openDocument(at: source)
+        XCTAssertEqual(document.pageCount, 2)
+        XCTAssertEqual(document.page(at: 0)?.annotations.first?.contents, "marker-2")
+        XCTAssertEqual(document.page(at: 1)?.annotations.first?.contents, "marker-1")
+    }
+
+    func testCompressPDFWritesReadablePDFWithSamePageCount() throws {
+        let directory = try makeTemporaryDirectory()
+        let source = directory.appendingPathComponent("source.pdf")
+        let compressed = directory.appendingPathComponent("compressed.pdf")
+        try makePDF(at: source, pageCount: 2)
+
+        let pageCount = try PDFTool.compressPDF(from: source, to: compressed, quality: 0.4)
+
+        XCTAssertEqual(pageCount, 2)
+        XCTAssertEqual(try PDFTool.pageCount(at: compressed), 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: compressed.path))
+    }
+
+    #if canImport(UIKit)
+    func testPDFToJPEGWritesSelectedPages() throws {
+        let directory = try makeTemporaryDirectory()
+        let source = directory.appendingPathComponent("source.pdf")
+        let output = directory.appendingPathComponent("jpg", isDirectory: true)
+        try makePDF(at: source, pageCount: 3)
+
+        let images = try PDFTool.pdfToJPEG(
+            from: source,
+            outputDirectory: output,
+            baseName: "page",
+            quality: 0.8,
+            pageIndices: [0, 2]
+        )
+
+        XCTAssertEqual(images.count, 2)
+        for image in images {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: image.path))
+            XCTAssertEqual(image.pathExtension.lowercased(), "jpg")
+        }
+    }
+    #endif
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -155,5 +235,19 @@ final class PDFToolTests: XCTestCase {
             context.endPDFPage()
         }
         context.closePDF()
+    }
+
+    private func addMarkerAnnotations(to url: URL, count: Int) throws {
+        let document = try PDFTool.openDocument(at: url)
+        for index in 0..<count {
+            let annotation = PDFAnnotation(
+                bounds: CGRect(x: 10, y: 10 + (index * 10), width: 70, height: 20),
+                forType: .freeText,
+                withProperties: nil
+            )
+            annotation.contents = "marker-\(index)"
+            document.page(at: index)?.addAnnotation(annotation)
+        }
+        XCTAssertTrue(document.write(to: url))
     }
 }
